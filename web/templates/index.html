@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🌊 Dashboard Tsunami Alert - Sistem Monitoring Ombak</title>
+    
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Bootstrap Icons -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+    <!-- Custom CSS -->
+    <link href="{{ url_for('static', filename='css/dashboard.css') }}" rel="stylesheet">
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <style>
+        /* Additional responsive fixes */
+        .video-container {
+            min-height: 300px;
+        }
+    </style>
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar navbar-expand-lg navbar-dark">
+        <div class="container">
+            <a class="navbar-brand fw-bold" href="#">
+                <i class="bi bi-tsunami"></i> Tsunami Alert Dashboard
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav ms-auto">
+                    <li class="nav-item">
+                        <span class="navbar-text">
+                            <span class="status-indicator" id="systemStatus"></span>
+                            <span id="systemStatusText">System Status</span>
+                        </span>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Container -->
+    <div class="container">
+        <div class="main-container">
+            <!-- Header -->
+            <div class="row mb-4">
+                <div class="col-12 text-center">
+                    <h1 class="display-4 fw-bold text-primary mb-2">
+                        <i class="bi bi-waves"></i> Sistem Monitoring Tsunami
+                    </h1>
+                    <p class="lead text-muted">Deteksi Dini Gelombang Tsunami dengan Teknologi AI</p>
+                </div>
+            </div>
+
+            <!-- Status Cards -->
+            <div class="row mb-4">
+                <div class="col-lg-3 col-md-6">
+                    <div class="metric-card">
+                        <div class="metric-value" id="currentStatus">Menunggu...</div>
+                        <div class="metric-label">Status Ombak</div>
+                    </div>
+                </div>
+                <div class="col-lg-3 col-md-6">
+                    <div class="metric-card">
+                        <div class="metric-value" id="peakY">0</div>
+                        <div class="metric-label">Peak Y (px)</div>
+                    </div>
+                </div>
+                <div class="col-lg-3 col-md-6">
+                    <div class="metric-card">
+                        <div class="metric-value" id="extremeCount">0</div>
+                        <div class="metric-label">Extreme Count</div>
+                    </div>
+                </div>
+                <div class="col-lg-3 col-md-6">
+                    <div class="metric-card">
+                        <div class="metric-value" id="totalData">0</div>
+                        <div class="metric-label">Total Data</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Main Tabs -->
+            <ul class="nav nav-tabs" id="mainTabs" role="tablist">
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link active" id="live-tab" data-bs-toggle="tab" data-bs-target="#live" type="button" role="tab">
+                        <i class="bi bi-camera-video"></i> Live Monitoring
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="config-tab" data-bs-toggle="tab" data-bs-target="#config" type="button" role="tab">
+                        <i class="bi bi-gear"></i> Konfigurasi
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="data-tab" data-bs-toggle="tab" data-bs-target="#data" type="button" role="tab">
+                        <i class="bi bi-graph-up"></i> Data & Grafik
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="earthquake-tab" data-bs-toggle="tab" data-bs-target="#earthquake" type="button" role="tab">
+                        <i class="bi bi-globe"></i> Monitoring Gempa
+                    </button>
+                </li>
+            </ul>
+
+            <div class="tab-content" id="mainTabsContent">
+                <!-- Live Monitoring Tab -->
+                <div class="tab-pane fade show active" id="live" role="tabpanel">
+                    <div class="row">
+                        <div class="col-lg-8">
+                            <div class="card">
+                                <div class="card-header">
+                                    <i class="bi bi-camera-video"></i> Live Video Stream
+                                </div>
+                                <div class="card-body">
+                                    <div class="video-container" id="videoContainer">
+                                        <div class="video-placeholder" id="videoPlaceholder">
+                                            <i class="bi bi-camera-video-off display-1"></i>
+                                            <div>Klik Start untuk memulai streaming</div>
+                                        </div>
+                                        <img id="videoStream" class="video-stream" style="display: none;" alt="Live Stream">
+                                    </div>
+                                    
+                                    <div class="mt-3 d-flex gap-2">
+                                        <button class="btn btn-success" id="startStreamBtn">
+                                            <i class="bi bi-play-fill"></i> Start Stream
+                                        </button>
+                                        <button class="btn btn-danger" id="stopStreamBtn">
+                                            <i class="bi bi-stop-fill"></i> Stop Stream
+                                        </button>
+                                        <div class="loading-spinner spinner-border spinner-border-sm text-primary" role="status" id="streamLoading">
+                                            <span class="visually-hidden">Loading...</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="col-lg-4">
+                            <div class="card mb-3">
+                                <div class="card-header">
+                                    <i class="bi bi-sliders"></i> Quick Settings
+                                </div>
+                                <div class="card-body">
+                                    <div class="mb-3">
+                                        <label class="form-label">RTSP URL</label>
+                                        <input type="text" class="form-control" id="rtspUrl" placeholder="rtsp://user:pass@ip:port/stream" value="{{ config.rtsp_url }}">
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label">Lokasi Kamera</label>
+                                        <input type="text" class="form-control" id="cameraLocation" placeholder="Pantai Kuta, Bali" value="{{ config.camera_location }}">
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label">Resize Width (px)</label>
+                                        <input type="number" class="form-control" id="resizeWidth" value="{{ config.resize_width }}">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="card">
+                                <div class="card-header">
+                                    <i class="bi bi-exclamation-triangle"></i> Alert Status
+                                </div>
+                                <div class="card-body">
+                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                        <span>WhatsApp Alert</span>
+                                        <span class="badge bg-{{ 'success' if wa_available else 'secondary' }}">
+                                            {{ 'Aktif' if wa_available else 'Nonaktif' }}
+                                        </span>
+                                    </div>
+                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                        <span>SMS Alert</span>
+                                        <span class="badge bg-{{ 'success' if sms_available else 'secondary' }}">
+                                            {{ 'Aktif' if sms_available else 'Nonaktif' }}
+                                        </span>
+                                    </div>
+                                    <div class="d-flex justify-content-between align-items-center">
+                                        <span>Tsunami Alert</span>
+                                        <span class="badge bg-{{ 'success' if config.enable_tsunami_alert else 'secondary' }}">
+                                            {{ 'Aktif' if config.enable_tsunami_alert else 'Nonaktif' }}
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Configuration Tab -->
+                <div class="tab-pane fade" id="config" role="tabpanel">
+                    <div class="row">
+                        <div class="col-lg-6">
+                            <!-- Wave Detection Settings -->
+                            <div class="config-section">
+                                <h5 class="mb-3"><i class="bi bi-sliders"></i> Ambang Batas Deteksi</h5>
+                                <div class="row">
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label">EXTREME (px)</label>
+                                        <input type="number" class="form-control" id="garisExtreme" value="{{ config.garis_extreme_y }}">
+                                    </div>
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label">SANGAT TINGGI (px)</label>
+                                        <input type="number" class="form-control" id="garisSangatTinggi" value="{{ config.garis_sangat_tinggi_y }}">
+                                    </div>
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label">TINGGI (px)</label>
+                                        <input type="number" class="form-control" id="garisTinggi" value="{{ config.garis_tinggi_y }}">
+                                    </div>
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label">SEDANG (px)</label>
+                                        <input type="number" class="form-control" id="garisSedang" value="{{ config.garis_sedang_y }}">
+                                    </div>
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label">RENDAH (px)</label>
+                                        <input type="number" class="form-control" id="garisRendah" value="{{ config.garis_rendah_y }}">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Overlay Settings -->
+                            <div class="config-section">
+                                <h5 class="mb-3"><i class="bi bi-palette"></i> Pengaturan Overlay</h5>
+                                <div class="row">
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label">Ketebalan Garis</label>
+                                        <input type="range" class="form-range" id="lineThickness" min="1" max="6" value="{{ config.line_thickness }}">
+                                    </div>
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label">Ketebalan Garis Puncak</label>
+                                        <input type="range" class="form-range" id="peakThickness" min="1" max="6" value="{{ config.peak_thickness }}">
+                                    </div>
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label">Ukuran Font</label>
+                                        <input type="range" class="form-range" id="fontSize" min="0.4" max="2.0" step="0.1" value="{{ config.font_scale }}">
+                                    </div>
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label">Ketebalan Font</label>
+                                        <input type="range" class="form-range" id="fontThickness" min="1" max="4" value="{{ config.font_thickness }}">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="col-lg-6">
+                            <!-- WhatsApp Settings -->
+                            <div class="config-section">
+                                <h5 class="mb-3"><i class="bi bi-whatsapp"></i> WhatsApp Alert</h5>
+                                <div class="form-check mb-3">
+                                    <input type="checkbox" class="form-check-input" id="enableWA" {{ 'checked' if config.enable_wa }}>
+                                    <label class="form-check-label" for="enableWA">
+                                        Aktifkan WhatsApp Alert
+                                    </label>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">Cooldown WA (detik)</label>
+                                    <input type="number" class="form-control" id="waCooldown" value="{{ config.wa_cooldown_sec }}">
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">Nomor WhatsApp Test</label>
+                                    <input type="text" class="form-control" id="waTestNumber" placeholder="whatsapp:+62...">
+                                </div>
+                                <button class="btn btn-success" id="testWABtn">
+                                    <i class="bi bi-send"></i> Test WhatsApp
+                                </button>
+                            </div>
+
+                            <!-- SMS Settings -->
+                            <div class="config-section">
+                                <h5 class="mb-3"><i class="bi bi-chat-text"></i> SMS Alert</h5>
+                                <div class="form-check mb-3">
+                                    <input type="checkbox" class="form-check-input" id="enableSMS" {{ 'checked' if config.enable_sms }}>
+                                    <label class="form-check-label" for="enableSMS">
+                                        Aktifkan SMS Alert
+                                    </label>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">Cooldown SMS (detik)</label>
+                                    <input type="number" class="form-control" id="smsCooldown" value="{{ config.sms_cooldown_sec }}">
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">Nomor SMS Test</label>
+                                    <input type="text" class="form-control" id="smsTestNumber" placeholder="+62...">
+                                </div>
+                                <button class="btn btn-primary" id="testSMSBtn">
+                                    <i class="bi bi-send"></i> Test SMS
+                                </button>
+                            </div>
+
+                            <!-- Tsunami Alert Settings -->
+                            <div class="config-section">
+                                <h5 class="mb-3"><i class="bi bi-exclamation-triangle"></i> Tsunami Alert</h5>
+                                <div class="form-check mb-3">
+                                    <input type="checkbox" class="form-check-input" id="enableTsunamiAlert" {{ 'checked' if config.enable_tsunami_alert }}>
+                                    <label class="form-check-label" for="enableTsunamiAlert">
+                                        Aktifkan Tsunami Alert
+                                    </label>
+                                </div>
+                                <div class="row">
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label">Threshold EXTREME</label>
+                                        <input type="number" class="form-control" id="extremeThreshold" value="{{ config.extreme_threshold }}">
+                                    </div>
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label">Cooldown Alert (menit)</label>
+                                        <input type="number" class="form-control" id="alertCooldown" value="{{ config.alert_cooldown_min }}">
+                                    </div>
+                                </div>
+                                <button class="btn btn-danger" id="testTsunamiBtn">
+                                    <i class="bi bi-exclamation-triangle"></i> Test Tsunami Alert
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="text-center mt-4">
+                        <button class="btn btn-primary btn-lg" id="saveConfigBtn">
+                            <i class="bi bi-save"></i> Simpan Konfigurasi
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Data & Graphics Tab -->
+                <div class="tab-pane fade" id="data" role="tabpanel">
+                    <div class="row mb-4">
+                        <div class="col-md-6">
+                            <button class="btn btn-primary" id="refreshDataBtn">
+                                <i class="bi bi-arrow-clockwise"></i> Refresh Data
+                            </button>
+                        </div>
+                        <div class="col-md-6 text-end">
+                            <button class="btn btn-success" id="downloadReportBtn">
+                                <i class="bi bi-download"></i> Download Laporan
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Chart -->
+                    <div class="card mb-4">
+                        <div class="card-header">
+                            <i class="bi bi-graph-up"></i> Grafik Pergerakan Ombak
+                        </div>
+                        <div class="card-body">
+                            <canvas id="waveChart" height="100"></canvas>
+                        </div>
+                    </div>
+
+                    <!-- Data Table -->
+                    <div class="data-table">
+                        <table class="table table-hover">
+                            <thead>
+                                <tr>
+                                    <th>Waktu</th>
+                                    <th>Peak Y</th>
+                                    <th>Status</th>
+                                    <th>Extreme Count</th>
+                                    <th>Alert</th>
+                                </tr>
+                            </thead>
+                            <tbody id="dataTableBody">
+                                <tr>
+                                    <td colspan="5" class="text-center">Memuat data...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Earthquake Monitoring Tab -->
+                <div class="tab-pane fade" id="earthquake" role="tabpanel">
+                    <div class="row">
+                        <div class="col-lg-8">
+                            <div class="card">
+                                <div class="card-header">
+                                    <i class="bi bi-globe"></i> Data Gempa Terbaru (BMKG)
+                                </div>
+                                <div class="card-body">
+                                    <button class="btn btn-primary mb-3" id="refreshEarthquakeBtn">
+                                        <i class="bi bi-arrow-clockwise"></i> Refresh Data Gempa
+                                    </button>
+                                    
+                                    <div id="earthquakeData">
+                                        <div class="text-center text-muted">
+                                            <i class="bi bi-globe display-1"></i>
+                                            <div>Klik refresh untuk memuat data gempa</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="col-lg-4">
+                            <div class="card">
+                                <div class="card-header">
+                                    <i class="bi bi-gear"></i> Pengaturan Gempa
+                                </div>
+                                <div class="card-body">
+                                    <div class="form-check mb-3">
+                                        <input type="checkbox" class="form-check-input" id="enableEarthquakeMonitoring" {{ 'checked' if config.enable_earthquake_monitoring }}>
+                                        <label class="form-check-label" for="enableEarthquakeMonitoring">
+                                            Aktifkan Monitoring Gempa
+                                        </label>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label">Threshold Magnitude</label>
+                                        <input type="number" class="form-control" id="magnitudeThreshold" step="0.1" value="{{ config.magnitude_threshold }}">
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label">Threshold Tsunami</label>
+                                        <input type="number" class="form-control" id="tsunamiThreshold" step="0.1" value="{{ config.tsunami_threshold }}">
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label">Interval Cek (detik)</label>
+                                        <input type="number" class="form-control" id="earthquakeInterval" value="{{ config.earthquake_check_interval }}">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <div class="footer">
+            <div class="container">
+                <p class="mb-0">
+                    <i class="bi bi-shield-check"></i> 
+                    Tsunami Alert Dashboard - Sistem Monitoring Ombak Real-time
+                </p>
+                <small>Dikembangkan dengan teknologi AI untuk keselamatan masyarakat pesisir</small>
+            </div>
+        </div>
+    </div>
+
+    <!-- Alert Modal -->
+    <div class="modal fade" id="alertModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Notifikasi</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body" id="alertModalBody">
+                    <!-- Alert content will be inserted here -->
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Tutup</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bootstrap 5 JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- Custom Dashboard JS -->
+    <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+</body>
+</html>

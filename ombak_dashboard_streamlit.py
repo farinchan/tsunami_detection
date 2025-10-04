@@ -12,8 +12,173 @@ from datetime import datetime, date
 from typing import Tuple
 from dashboard_config import load_config, save_config
 
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    # Jika python-dotenv tidak terinstall, tetap lanjut
+    pass
+
 st.set_page_config(page_title="🌊 Dashboard + Tsunami Alert", layout="wide")
 st.title("🌊 Dashboard + Tsunami Alert")
+
+# AUTO-RECONNECTION & ERROR HANDLING UTilities
+
+def smart_rtsp_connect(url, max_retries=1, timeout=5):
+    """Smart RTSP connection - minimal dan stable"""
+    
+    # Gunakan protocol yang sudah stabil sebelumnya atau default
+    if not hasattr(st.session_state, 'working_rtsp_protocol'):
+        # Protocol standard yang lebih stabil
+        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|stimeout;5000000|max_delay;500000"
+    else:
+        # Gunakan protocol yang sudah terbukti bekerja
+        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = st.session_state.working_rtsp_protocol
+    
+    os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "quiet"
+    
+    # Coba connect dengan timeout cepat
+    cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
+    
+    if cap.isOpened():
+        ret, frame = cap.read()
+        if ret and frame is not None:
+            # Success - simpan protocol yang bekerja
+            if not hasattr(st.session_state, 'working_rtsp_protocol'):
+                st.session_state.working_rtsp_protocol = "rtsp_transport;tcp|stimeout;5000000|max_delay;500000"
+            return cap
+        cap.release()
+    
+    return None
+
+def enhanced_error_diagnosis(rtsp_url):
+    """Diagnosa error RTSP dengan solusi spesifik"""
+    diagnosis = {'possible_causes': [], 'solutions': [], 'alternative_urls': []}
+    
+    try:
+        if 'rtsp://' not in rtsp_url:
+            diagnosis['solutions'].append('URL format salah - harus diawali dengan rtsp://')
+            return diagnosis
+        
+        if '@' in rtsp_url:
+            parts = rtsp_url.split('@')
+            if len(parts) == 2:
+                auth, remote = parts
+                if ':' in auth:
+                    username, password = auth.split(':', 1)
+                    ip_part = remote.split('/')[0]
+                    if ':' in ip_part:
+                        ip, port = ip_part.split(':', 1)
+                    else:
+                        ip, port = ip_part, '8554'
+                    
+                    if ip.startswith('192.168.1'):
+                        diagnosis['alternative_urls'] = [
+                            f'rtsp://{username}:{password}@{ip}:554/Streaming/Channels/401',
+                            f'rtsp://{username}:{password}@{ip}:554/channel1/main/stream',
+                            f'rtsp://{username}:{password}@{ip}:554/cam/realmonitor?channel=1&subtype=0',
+                            f'rtsp://{ip}:554/stream1',
+                            f'rtsp://{username}:{password}@{ip}:554/unicast/c1/s0/live',
+                            f'rtsp://{username}:{password}@{ip}:8554/live/ch1',
+                            f'rtsp://{username}:{password}@{ip}:8554/Streaming/Channels/601',
+                            f'rtsp://{username}:{password}@{ip}:8554/channel1/stream1',
+                            f'rtsp://admin:admin@{ip}:554/h264Preview_01_main',
+                            f'rtsp://admin:admin@{ip}:8554/h264Preview_01_main'
+                        ]
+                        diagnosis['possible_causes'].append('Camera mungkin menggunakan port 554 atau channel berbeda')
+                        diagnosis['possible_causes'].append('Path streaming mungkin berbeda (bukan /Streaming/Channels/101)')
+                        diagnosis['possible_causes'].append('Username/password mungkin bukan admin:admin')
+                    
+                    diagnosis['solutions'].extend([
+                        'Restart IP Camera untuk refresh koneksi',
+                        'Cek kabel ethernet dan power supply camera',
+                        'Pastikan camera dan PC dalam jaringan yang sama',
+                        f'Test web interface camera di browser: http://{ip}/',
+                        'Coba username/password lain selain admin:admin'
+                    ])
+    except Exception as e:
+        diagnosis['solutions'].append(f'Error parsing URL: {e}')
+    
+    return diagnosis
+
+def show_enhanced_error_message(rtsp_url):
+    """Tampilkan error message dengan diagnosis lengkap"""
+    diagnosis = enhanced_error_diagnosis(rtsp_url)
+    
+    st.error(f"❌ RTSP Connection Failed: {rtsp_url}")
+    st.markdown("### 🔍 Diagnosis and Troubleshooting")
+    
+    if diagnosis['possible_causes']:
+        st.markdown("**🚨 Possible Causes:**")
+        for cause in diagnosis['possible_causes']:
+            st.markdown(f"• {cause}")
+    
+    st.markdown("**✅ Recommended Solutions:**")
+    for i, solution in enumerate(diagnosis['solutions'][:5], 1):
+        st.markdown(f"{i}. {solution}")
+    
+    if diagnosis['alternative_urls']:
+        st.markdown("**🔧 Alternative RTSP URLs to Try:**")
+        for i, alt_url in enumerate(diagnosis['alternative_urls'], 1):
+            st.code(f"{i}. {alt_url}")
+            if st.button(f"Try URL {i}", key=f"try_url_{i}"):
+                st.session_state.rtsp_url_session = alt_url
+                st.session_state.running = False
+                st.rerun()
+    
+    st.markdown("**🚀 Actions:**")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if st.button("🔄 Auto Retry", type="primary"):
+            st.session_state.running = False
+            st.session_state.retry_count = getattr(st.session_state, 'retry_count', 0) + 1
+            st.rerun()
+    
+    with col2:
+        if st.button("📝 Edit URL", type="secondary"):
+            st.info("Edit RTSP URL di sidebar sebelah kiri")
+    
+    with col3:
+        if st.button("🏥 Health Check", type="secondary"):
+            ping_test_rtsp(rtsp_url)
+
+def ping_test_rtsp(rtsp_url):
+    """Test basic network connectivity ke camera IP"""
+    import subprocess
+    ip = rtsp_url.split('@')[1].split(':')[0] if '@' in rtsp_url else ''
+    if ip:
+        try:
+            result = subprocess.run(['ping', '-n', '1', ip], capture_output=True, timeout=5)
+            if result.returncode == 0:
+                st.success(f"✅ IP {ip} is reachable via network")
+            else:
+                st.error(f"❌ IP {ip} is not reachable - check network connection")
+        except Exception as e:
+            st.warning(f"⚠️ Ping test error: {e}")
+    else:
+        st.error("❌ Cannot extract IP from RTSP URL")
+
+# Connection Monitor Function
+def show_connection_monitor():
+    """Tampilkan connection monitor di sidebar"""
+    with st.sidebar.expander("🔍 Connection Monitor", expanded=False):
+        if hasattr(st.session_state, 'running') and st.session_state.running:
+            rtsp_url = st.session_state.get('rtsp_url_session', '')
+            failures = getattr(st.session_state, 'consecutive_failures', 0)
+            last_frame = getattr(st.session_state, 'last_frame_time', 0)
+            time_since_last = time.time() - last_frame if last_frame > 0 else 0
+            
+            st.metric("Consecutive Failures", failures)
+            st.metric("Seconds Since Last Frame", f"{time_since_last:.1f}s")
+            
+            if failures > 0:
+                st.warning("⚠️ Connection issues detected")
+            
+            if st.button("🔄 Force Reconnect"):
+                st.session_state.running = False
+                st.rerun()
 
 # ===== Optional WhatsApp & SMS =====
 SEND_WA_AVAILABLE = False
@@ -39,9 +204,30 @@ st.sidebar.header("📄 Data")
 csv_path = st.sidebar.text_input("CSV log path", value=config.get("csv_path", os.getenv("OMBAK_CSV_PATH","deteksi_ombak.csv")))
 sample_every_sec = st.sidebar.number_input("Interval tulis log (detik)", 1, 60, config.get("sample_every_sec", 2))
 
-st.sidebar.header("🎥 RTSP / Streaming")
-rtsp_url = st.sidebar.text_input("RTSP / HTTP URL", value=config.get("rtsp_url", os.getenv("RTSP_URL","")),
-    help="Contoh: rtsp://user:pass@ip:8554/Streaming/Channels/101")
+st.sidebar.header("🎥 Video Source / Streaming")
+# Source type is fixed to RTSP only - simplified for Raspberry Pi deployment
+video_source_type = "RTSP/HTTP Stream"
+st.sidebar.info("📡 Mode: RTSP/HTTP Stream Only")
+
+# Inisialisasi variabel untuk RTSP saja
+rtsp_url = ""
+video_file = ""  # Tidak digunakan dalam mode RTSP-only
+available_videos = []  # Dipertahankan untuk compatibility tapi tidak digunakan
+
+# RTSP/HTTP Stream configuration
+if "rtsp_url_session" not in st.session_state:
+    st.session_state.rtsp_url_session = config.get("rtsp_url", os.getenv("RTSP_URL",""))
+
+rtsp_url_input = st.sidebar.text_input("RTSP / HTTP URL", 
+    value=st.session_state.rtsp_url_session,
+    help="Standard: rtsp://admin:admin@192.168.1.3:8554/Streaming/Channels/101")
+
+# Update session state jika ada perubahan
+if rtsp_url_input != st.session_state.rtsp_url_session:
+    st.session_state.rtsp_url_session = rtsp_url_input
+
+rtsp_url = st.session_state.rtsp_url_session
+
 resize_width = st.sidebar.number_input("Resize lebar (px, 0 = asli)", 0, 3840, config.get("resize_width", 960), step=10)
 
 st.sidebar.header("📍 Lokasi Kamera")
@@ -136,7 +322,9 @@ def auto_save_config():
         current_config = {
             "csv_path": csv_path,
             "sample_every_sec": sample_every_sec,
+            "video_source_type": video_source_type,
             "rtsp_url": rtsp_url,
+            "video_file": video_file,
             "resize_width": resize_width,
             "camera_location": camera_location,
             "garis_extreme_y": GARIS_EXTREME_Y,
@@ -209,6 +397,24 @@ with st.sidebar.expander("💾 Kelola Konfigurasi", expanded=False):
                 st.error("❌ Gagal mengimpor konfigurasi")
         except Exception as e:
             st.error(f"❌ Error: {e}")
+
+# Performance Control
+st.sidebar.markdown("---")
+verbose_debug = st.sidebar.checkbox("🔧 Verbose Debug Mode", value=False, help="Show detailed connection info")
+detection_mode = st.sidebar.selectbox("Detection Performance", ["Normal (Every Frame)", "Fast (Every 2nd Frame)", "Skip Detection"], index=0)
+
+if detection_mode == "Skip Detection":
+    st.sidebar.warning("⚠️ Detection disabled - Stream only")
+elif detection_mode == "Fast (Every 2nd Frame)":
+    st.sidebar.info("🚀 Fast mode: 50% CPU reduction")
+else:
+    st.sidebar.info("⚡ Full detection: All frames processed")
+
+if not verbose_debug:
+    st.sidebar.info("🔇 Quiet mode: Minimal notifications")
+
+# Show Connection Monitor
+show_connection_monitor()
 
 # ===== Tabs =====
 TAB_LIVE, TAB_LOG, TAB_EARTHQUAKE = st.tabs(["🎥 Live RTSP + Deteksi + WhatsApp Tsunami Alert", "📈 Log & Grafik / Laporan", "🌍 Monitoring Gempa BMKG"])
@@ -592,11 +798,25 @@ with TAB_LIVE:
     c1,c2,_ = st.columns([1,1,6])
     with c1: start_btn = st.button("▶️ Start")
     with c2: stop_btn  = st.button("⏹ Stop")
-    if "running" not in st.session_state: st.session_state.running = False
-    if start_btn and rtsp_url: st.session_state.running = True
+    if "running" not in st.session_state: 
+        # Auto-start jika ada RTSP URL yang valid
+        has_valid_rtsp = bool(rtsp_url and rtsp_url.strip())
+        st.session_state.running = has_valid_rtsp and video_source_type == "RTSP/HTTP Stream"
+    
+    if start_btn and rtsp_url: 
+        st.session_state.running = True
+        st.rerun()  # Refresh untuk mulai video
     if stop_btn: st.session_state.running = False
 
     frame_holder = st.empty(); info_holder = st.empty()
+    
+    # Tampilkan status auto-start untuk RTSP only
+    if st.session_state.running and rtsp_url:
+        st.success(f"🎥 CCTV Stream berjalan otomatis: {rtsp_url}")
+    elif rtsp_url and not st.session_state.running:
+        st.info(f"🔄 Mencoba connecting ke RTSP: {rtsp_url}")
+    elif not rtsp_url:
+        st.warning("❌ Masukkan RTSP URL untuk auto-start CCTV")
 
     # Initialize session state for tracking
     if "last_log" not in st.session_state: st.session_state.last_log = 0.0
@@ -605,66 +825,158 @@ with TAB_LIVE:
     if "last_twilio_alert" not in st.session_state: st.session_state.last_twilio_alert = 0.0
     if "frame_idx" not in st.session_state: st.session_state.frame_idx = 0
     if "extreme_count" not in st.session_state: st.session_state.extreme_count = 0
+    cap = None
+    source_type = ""
+    source_name = ""
+    
     if st.session_state.running and rtsp_url:
-        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|stimeout;10000000|max_delay;500000|buffer_size;102400"
-        os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "quiet"
-        cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
-        if not cap.isOpened():
-            st.error("Gagal membuka stream. Cek URL/kredensial/jaringan."); st.session_state.running = False
+        # Gunakan smart connection dengan auto-retry
+        cap = smart_rtsp_connect(rtsp_url, max_retries=3, timeout=10)
+        if cap is None:
+            # Show enhanced error message dengan diagnosa
+            show_enhanced_error_message(rtsp_url)
+            st.session_state.running = False
         else:
-            if resize_width>0: cap.set(cv2.CAP_PROP_FRAME_WIDTH, resize_width)
-            info_holder.info("Streaming... Klik Stop untuk berhenti.")
-            fail = 0
-            while st.session_state.running:
-                ok, frame = cap.read()
-                if not ok or frame is None:
-                    fail += 1
-                    if fail >= 30:
-                        cap.release(); time.sleep(1)
-                        cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG); fail = 0
+            source_type = "Stream"
+            source_name = rtsp_url
+            
+            # Initialize connection monitoring dan detection variables
+            if not hasattr(st.session_state, 'consecutive_failures'):
+                st.session_state.consecutive_failures = 0
+            if not hasattr(st.session_state, 'last_frame_time'):
+                st.session_state.last_frame_time = time.time()
+            if not hasattr(st.session_state, 'last_peak_y'):
+                st.session_state.last_peak_y = 500  # Default nilai aman
+            if not hasattr(st.session_state, 'last_status'):
+                st.session_state.last_status = "Sedang"
+            if not hasattr(st.session_state, 'last_color'):
+                st.session_state.last_color = (0,255,255)
+# Video file mode removed - RTSP only for Raspberry Pi deployment
+    
+    if cap and cap.isOpened():
+        if resize_width>0: cap.set(cv2.CAP_PROP_FRAME_WIDTH, resize_width)
+        info_holder.success(f"✅ {source_type} berhasil terhubung: {source_name}")
+        info_holder.info("Klik Stop untuk menghentikan stream")
+        fail = 0
+        while st.session_state.running:
+            ok, frame = cap.read()
+            
+            # Stable connection monitoring - hanya reconnect jika benar-benar mati 1 menit
+            if not ok or frame is None:
+                current_time = time.time()
+                
+                # Initialize last_successful_frame jika belum ada
+                if not hasattr(st.session_state, 'last_successful_frame'):
+                    st.session_state.last_successful_frame = current_time
+                
+                # Update last successful frame time untuk hitung downtime
+                minutes_without_frame = (current_time - st.session_state.last_successful_frame) / 60
+                
+                if rtsp_url:
+                    # Hanya reconnect jika sudah tidak ada frame selama 1+ menit
+                    if minutes_without_frame >= 1.0:
+                        # Hanya show warning sekali per reconnect cycle
+                        if not hasattr(st.session_state, 'reconnect_notified'):
+                            st.warning(f"🔄 Connection lost for {minutes_without_frame:.1f} minutes. Reconnecting...")
+                            st.session_state.reconnect_notified = True
+                        
+                        cap.release()
+                        time.sleep(2)
+                        
+                        # Try reconnect dengan 1 attempt saja
+                        cap = smart_rtsp_connect(rtsp_url, max_retries=1, timeout=3)
+                        if cap is not None:
+                            st.success("✅ Connection restored!")
+                            st.session_state.last_successful_frame = current_time
+                            st.session_state.reconnect_notified = False
+                            continue
+                        else:
+                            # Tunggu 30 detik sebelum coba lagi agar tidak spam
+                            time.sleep(30)
+                            continue
+                    else:
+                        # Connection masih OK, hanya skip frame ini
+                        continue
+                else:
+                    # Untuk video file, restart jika habis
+                    cap.release()
+                    cap = cv2.VideoCapture(video_file)
                     continue
-                fail = 0; st.session_state.frame_idx += 1
-                h,w = frame.shape[:2]
-                if resize_width>0 and w != resize_width:
-                    ratio = resize_width / float(w)
-                    frame = cv2.resize(frame,(resize_width,int(h*ratio)),interpolation=cv2.INTER_AREA)
+            else:
+                # Frame berhasil dibaca - update timestamps
+                st.session_state.last_successful_frame = time.time()
+                if hasattr(st.session_state, 'reconnect_notified'):
+                    delattr(st.session_state, 'reconnect_notified')
+                
+            fail = 0; st.session_state.frame_idx += 1
+            h,w = frame.shape[:2]
+            if resize_width>0 and w != resize_width:
+                ratio = resize_width / float(w)
+                frame = cv2.resize(frame,(resize_width,int(h*ratio)),interpolation=cv2.INTER_AREA)
 
-                L = {'EXTREME':int(GARIS_EXTREME_Y),'SANGAT_TINGGI':int(GARIS_SANGAT_TINGGI_Y),
-                     'TINGGI':int(GARIS_TINGGI_Y),'SEDANG':int(GARIS_SEDANG_Y),'RENDAH':int(GARIS_RENDAH_Y)}
+            L = {'EXTREME':int(GARIS_EXTREME_Y),'SANGAT_TINGGI':int(GARIS_SANGAT_TINGGI_Y),
+                 'TINGGI':int(GARIS_TINGGI_Y),'SEDANG':int(GARIS_SEDANG_Y),'RENDAH':int(GARIS_RENDAH_Y)}
+            # Smart detection berdasarkan performance mode
+            if detection_mode == "Skip Detection":
+                # Skip semua detection - hanya stream
+                peak_y = h//2  # Setengah layar
+                status = "Detection Disabled"
+                color = (128, 128, 128)
+                lines = None
+            elif detection_mode == "Fast (Every 2nd Frame)":
+                # Process setiap 2nd frame saja
+                if st.session_state.frame_idx % 2 == 0:
+                    peak_y,_ = detect_peak_y_hough(frame)
+                    status,color = classify_main_style(peak_y, L)
+                    # Update dengan hasil terakhir untuk frame yang di-skip
+                    st.session_state.last_peak_y = peak_y
+                    st.session_state.last_status = status
+                    st.session_state.last_color = color
+                else:
+                    # Gunakan hasil deteksi sebelumnya untuk frame yang di-skip
+                    peak_y = st.session_state.last_peak_y
+                    status = st.session_state.last_status
+                    color = st.session_state.last_color
+            else:
+                # Full detection - process semua frame
                 peak_y,_ = detect_peak_y_hough(frame)
                 status,color = classify_main_style(peak_y, L)
 
-                # ===== TWILIO TSUNAMI ALERT LOGIC =====
-                alert_sent = False
-                
-                if "EXTREME" in status:
-                    st.session_state.extreme_count += 1
+            # ===== TWILIO TSUNAMI ALERT LOGIC =====
+            alert_sent = False
+            
+            if "EXTREME" in status:
+                st.session_state.extreme_count += 1
+                # Menggunakan repr untuk menghindari error Unicode pada Windows terminal
+                try:
                     print(f"🚨 EXTREME #{st.session_state.extreme_count} - Puncak Y: {peak_y}")
+                except UnicodeEncodeError:
+                    print(f"EXTREME #{st.session_state.extreme_count} - Puncak Y: {peak_y}")
+                
+                # Cek apakah perlu kirim tsunami alert
+                if (enable_tsunami_alert and SEND_WA_AVAILABLE and 
+                    check_tsunami_alert_condition(st.session_state.extreme_count, st.session_state.last_twilio_alert, alert_cooldown_min)):
                     
-                    # Cek apakah perlu kirim tsunami alert
-                    if (enable_tsunami_alert and SEND_WA_AVAILABLE and 
-                        check_tsunami_alert_condition(st.session_state.extreme_count, st.session_state.last_twilio_alert, alert_cooldown_min)):
-                        
-                        try:
-                            sids = send_tsunami_alert_whatsapp(st.session_state.extreme_count, peak_y, st.session_state.frame_idx, location=camera_location)
-                            st.session_state.last_twilio_alert = time.time()
-                            alert_sent = True
-                            st.sidebar.success(f"🚨 TSUNAMI ALERT DIKIRIM! SID(s): {', '.join(sids)}")
-                        except Exception as e:
-                            st.sidebar.error(f"Tsunami Alert error: {e}")
-                else:
-                    # Reset counter jika bukan extreme
-                    if st.session_state.extreme_count > 0:
-                        print(f"✅ Status kembali normal. Extreme count direset dari {st.session_state.extreme_count}")
-                    st.session_state.extreme_count = 0
+                    try:
+                        sids = send_tsunami_alert_whatsapp(st.session_state.extreme_count, peak_y, st.session_state.frame_idx, location=camera_location)
+                        st.session_state.last_twilio_alert = time.time()
+                        alert_sent = True
+                        st.sidebar.success(f"🚨 TSUNAMI ALERT DIKIRIM! SID(s): {', '.join(sids)}")
+                    except Exception as e:
+                        st.sidebar.error(f"Tsunami Alert error: {e}")
+            else:
+                # Reset counter jika bukan extreme
+                if st.session_state.extreme_count > 0:
+                    print(f"✅ Status kembali normal. Extreme count direset dari {st.session_state.extreme_count}")
+                st.session_state.extreme_count = 0
 
-                draw_overlay(frame,L,peak_y,status,color,st.session_state.extreme_count,alert_sent)
+            draw_overlay(frame,L,peak_y,status,color,st.session_state.extreme_count,alert_sent)
 
-                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                frame_holder.image(rgb, channels="RGB", width="stretch")
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame_holder.image(rgb, channels="RGB", width="stretch")
 
-                now = time.time()
-                if now - st.session_state.last_log >= sample_every_sec:
+            now = time.time()
+            if now - st.session_state.last_log >= sample_every_sec:
                     append_csv(csv_path, st.session_state.frame_idx, peak_y, status, 0, 
                              st.session_state.extreme_count, alert_sent)
 
@@ -699,11 +1011,20 @@ with TAB_LIVE:
                             except Exception as e:
                                 st.sidebar.error(f"SMS error: {e}")
 
-                    st.session_state.last_log = now
-                time.sleep(0.005)
-            cap.release(); info_holder.success("Stream dihentikan.")
+            st.session_state.last_log = now
+            time.sleep(0.005)
+        cap.release()
+        info_holder.success("Stream dihentikan.")
     else:
-        st.info("Masukkan RTSP URL di sidebar, lalu klik Start.")
+        if st.session_state.running == False:
+            if video_source_type == "Video File" and video_file:
+                st.info(f"📝 Video '{video_file}' siap untuk dimulai. Klik 'Start' untuk mulai.")
+            elif rtsp_url:
+                st.info("📝 RTSP stream siap untuk dimulai. Klik 'Start' untuk mulai.")
+            else:
+                st.info("📝 Pilih sumber video di sidebar untuk memulai.")
+        else:
+            st.info("⏸️ Stream sedang loading...")
 
 
 with TAB_LOG:
@@ -720,9 +1041,14 @@ with TAB_LOG:
                 df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
                 df['waktu'] = df['timestamp']
             elif {'tanggal','jam'}.issubset(df.columns):
-                df['waktu'] = pd.to_datetime(df['tanggal'].astype(str)+" "+df['jam'].astype(str), errors='coerce')
+                df['waktu'] = pd.to_datetime(df['tanggal'].astype(str)+" "+df['jam'].astype(str), errors='coerce', format='%Y-%m-%d %H:%M:%S')
             else:
                 df['waktu'] = pd.NaT
+            
+            # Pastikan kolom waktu adalah datetime64[ns]
+            if 'waktu' in df.columns:
+                df['waktu'] = pd.to_datetime(df['waktu'], errors='coerce')
+            
             return df
         except Exception as e:
             st.error(f"Gagal baca CSV: {e}")
@@ -730,18 +1056,47 @@ with TAB_LOG:
 
     df = load_df(csv_path)
     if not df.empty and 'waktu' in df.columns:
-        min_d = df['waktu'].min().date() if pd.notna(df['waktu'].min()) else date.today()
-        max_d = df['waktu'].max().date() if pd.notna(df['waktu'].max()) else date.today()
+        # Pastikan kolom waktu adalah datetime dan filter NaN values
+        df = df.dropna(subset=['waktu'])
+        if not df.empty:
+            min_d = df['waktu'].min().date() if pd.notna(df['waktu'].min()) else date.today()
+            max_d = df['waktu'].max().date() if pd.notna(df['waktu'].max()) else date.today()
 
-        # ⛑️ Perbaikan: date_input aman baik satu tanggal atau rentang
-        _sel = st.date_input("Rentang tanggal", value=(min_d, max_d))
-        if isinstance(_sel, (list, tuple)) and len(_sel) == 2:
-            d1, d2 = _sel
+            # ⛑️ Perbaikan: date_input aman baik satu tanggal atau rentang
+            _sel = st.date_input("Rentang tanggal", value=(min_d, max_d))
+            if isinstance(_sel, (list, tuple)) and len(_sel) == 2:
+                d1, d2 = _sel
+                # Pastikan kedua tanggal valid
+                if d1 is None:
+                    d1 = min_d
+                if d2 is None:
+                    d2 = max_d
+            elif _sel is not None:
+                d1 = d2 = _sel
+            else:
+                d1 = min_d
+                d2 = max_d
+
+            # Perbaikan: pastikan operasi comparison bekerja dengan benar
+            try:
+                # Debug info
+                st.info(f"📅 Filter range: {d1} to {d2}")
+                
+                date_start = pd.to_datetime(d1)
+                date_end = pd.to_datetime(d2) + pd.Timedelta(days=1)
+                
+                # Buat mask secara lebih aman
+                mask = (df['waktu'].notna()) & (df['waktu'] >= date_start) & (df['waktu'] <= date_end)
+                dff = df.loc[mask].copy()
+                
+                st.success(f"✅ Data tersaring: {len(dff)} dari {len(df)} records")
+                
+            except Exception as e:
+                st.error(f"🚨 Error dalam filtering tanggal: {e}")
+                st.info("💡 Menggunakan semua data yang tersedia.")
+                dff = df.copy()
         else:
-            d1 = d2 = _sel
-
-        mask = (df['waktu'] >= pd.to_datetime(d1)) & (df['waktu'] <= pd.to_datetime(d2) + pd.Timedelta(days=1))
-        dff = df.loc[mask].copy()
+            dff = pd.DataFrame()
     else:
         dff = df.copy()
 
